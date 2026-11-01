@@ -1,0 +1,37 @@
+menu "Relay configuration"
+
+    config RELAY_API_TOKEN
+        string "Bearer token for control API"
+        default "change-me-token"
+        help
+            Токен для заголовка Authorization: Bearer <token>.
+            Меняется только пересборкой (ADR-0002). Не логируется.
+
+    config RELAY_AP_PASSWORD
+        string "Password for fallback access point"
+        default "change-me-12345678"
+        help
+            Пароль WPA2 для собственной точки доступа ESP32-Relay-XXXX.
+            Меняется только пересборкой (ADR-0004). Не логируется.
+
+    config RELAY_GPIO
+        int "Relay GPIO number"
+        default 26
+        help
+            GPIO управления реле. Модуль реле активен низким уровнем,
+            поэтому до инициализации пин должен быть подтянут вверх (ADR-0008).
+
+    config BUTTON_GPIO
+        int "Button GPIO number"
+        default 27
+        help
+            GPIO физической кнопки. Кнопка замыкает пин на GND,
+            внутренняя подтяжка вверх включается программно.
+
+    config LED_GPIO
+        int "Status LED GPIO number"
+        default 2
+        help
+            GPIO светодиода статуса. На DevKitC V4 это встроенный LED.
+
+endmenu
