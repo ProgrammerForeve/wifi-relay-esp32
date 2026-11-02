@@ -12,9 +12,9 @@ extern "C" {
  * @brief Текущий режим Wi-Fi (ADR-0004).
  */
 typedef enum {
-    WIFI_MGR_MODE_OFF = 0,
-    WIFI_MGR_MODE_STA,
-    WIFI_MGR_MODE_AP,
+  WIFI_MGR_MODE_OFF = 0,
+  WIFI_MGR_MODE_STA,
+  WIFI_MGR_MODE_AP,
 } wifi_mgr_mode_t;
 
 /**
@@ -23,9 +23,10 @@ typedef enum {
  * Не содержит токен и Wi-Fi-пароль (ADR-0002).
  */
 typedef struct {
-    wifi_mgr_mode_t mode;
-    char ip[16];
-    int8_t rssi;
+  wifi_mgr_mode_t mode;
+  char ip[16];
+  int8_t rssi;
+  char ssid[33];
 } wifi_mgr_info_t;
 
 /**
@@ -42,6 +43,11 @@ wifi_mgr_mode_t wifi_mgr_get_mode(void);
  * @brief Заполнить снимок диагностики; null-указатель — ошибка.
  */
 esp_err_t wifi_mgr_get_info(wifi_mgr_info_t *info);
+
+/**
+ * @brief Uptime с момента старта приложения в секундах.
+ */
+uint32_t wifi_mgr_get_uptime_s(void);
 
 /**
  * @brief Записать SSID/пароль в NVS и перейти в STA (ADR-0006).

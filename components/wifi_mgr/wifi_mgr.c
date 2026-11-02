@@ -58,6 +58,7 @@ static uint32_t s_backoff_ms = BACKOFF_INIT_MS;
 static int64_t s_first_fail_us;
 static char s_ip[16];
 static int8_t s_rssi;
+static char s_ap_ssid[33];
 
 static void state_lock(void) {
   if (s_state_mutex != NULL) {
@@ -298,6 +299,7 @@ static esp_err_t start_sta(void) {
   s_first_fail_us = 0;
   s_ip[0] = '\0';
   s_rssi = 0;
+  s_ap_ssid[0] = '\0';
   state_unlock();
 
   esp_timer_stop(s_reconnect_timer);
@@ -396,6 +398,7 @@ static esp_err_t start_ap(void) {
 
   state_lock();
   s_mode = WIFI_MGR_MODE_AP;
+  snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s", ssid);
   state_unlock();
 
   err = esp_wifi_set_mode(WIFI_MODE_AP);
@@ -606,8 +609,17 @@ esp_err_t wifi_mgr_get_info(wifi_mgr_info_t *info) {
   info->mode = s_mode;
   memcpy(info->ip, s_ip, sizeof(info->ip));
   info->rssi = s_rssi;
+  if (s_mode == WIFI_MGR_MODE_AP) {
+    memcpy(info->ssid, s_ap_ssid, sizeof(info->ssid));
+  } else {
+    info->ssid[0] = '\0';
+  }
   state_unlock();
   return ESP_OK;
+}
+
+uint32_t wifi_mgr_get_uptime_s(void) {
+  return (uint32_t)(esp_timer_get_time() / 1000000);
 }
 
 esp_err_t wifi_mgr_provision(const char *ssid, const char *password) {
