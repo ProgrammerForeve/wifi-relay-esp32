@@ -131,6 +131,8 @@ idf.py build flash monitor
 
 ## Документация
 
+- [`HARDWARE.md`](HARDWARE.md) — распиновка, подключение реле/кнопки, питание
+  и меры безопасности.
 - [`docs/adr/`](docs/adr/) — Architecture Decision Records, 0001…0009.
 - [`GLOSSARY.md`](GLOSSARY.md) — термины проекта; при изменении решения
   сначала правится ADR, потом глоссарий.
