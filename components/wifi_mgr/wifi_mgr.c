@@ -654,6 +654,28 @@ esp_err_t wifi_mgr_provision(const char *ssid, const char *password) {
 }
 
 esp_err_t wifi_mgr_reset_credentials(void) {
-  // Стирание креденшелов и возврат в AP — в тикете про provisioning.
-  return ESP_ERR_NOT_SUPPORTED;
+  if (s_state_mutex == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err == ESP_OK) {
+    err = nvs_erase_all(nvs);
+    if (err == ESP_OK) {
+      err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+  } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+    err = ESP_OK;
+  }
+
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to erase Wi-Fi credentials: %s",
+             esp_err_to_name(err));
+    return err;
+  }
+
+  ESP_LOGW(TAG, "Wi-Fi credentials erased");
+  return start_ap();
 }
