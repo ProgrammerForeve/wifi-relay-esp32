@@ -1,19 +1,96 @@
 #include "http_api.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "arpa/inet.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "lwip/sockets.h"
 #include "sdkconfig.h"
 #include "wifi_mgr.h"
 
 #define AUTH_HEADER_MAX_LEN 256
 #define RELAY_BODY_MAX_LEN 128
+#define PROVISION_BODY_MAX_LEN 512
+#define DNS_BODY_MAX_LEN 512
+#define DNS_TTL_SECONDS 60
+#define PROVISION_SWITCH_DELAY_MS 500
+#define DNS_TASK_STACK 4096
+#define DNS_TASK_PRIO 4
 
 static const char *TAG = "http_api";
 
 static httpd_handle_t s_server;
+static volatile bool s_running;
+static volatile bool s_dns_task_started;
+
+static const char CAPTIVE_PAGE_HTML[] =
+    "<!DOCTYPE html>"
+    "<html lang='ru'><head><meta charset='utf-8'>"
+    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+    "<title>ESP32 Relay</title>"
+    "<style>"
+    "body{font-family:system-ui,sans-serif;max-width:420px;margin:2rem auto;"
+    "padding:0 1rem;}"
+    "label{display:block;margin-top:1rem;}"
+    "input{width:100%;padding:.5rem;box-sizing:border-box;}"
+    "button{margin-top:1rem;padding:.6rem 1rem;}"
+    "pre{white-space:pre-wrap;background:#f4f4f4;padding:.5rem;}"
+    "</style></head><body>"
+    "<h1>ESP32 Relay</h1>"
+    "<form id='provision'>"
+    "<label>Wi-Fi SSID<input name='ssid' required maxlength='32' "
+    "autocomplete='off'></label>"
+    "<label>Wi-Fi password<input name='password' type='password' "
+    "maxlength='64' autocomplete='off'></label>"
+    "<button type='submit'>Connect</button>"
+    "</form>"
+    "<hr>"
+    "<label>Bearer token<input id='token' type='password' "
+    "autocomplete='off'></label>"
+    "<button id='toggle' type='button'>Toggle relay</button>"
+    "<pre id='result'></pre>"
+    "<script>"
+    "const result=document.getElementById('result');"
+    "document.getElementById('provision').addEventListener('submit',"
+    "async(e)=>{"
+    "e.preventDefault();"
+    "const data=new URLSearchParams();"
+    "new FormData(e.target).forEach((v,k)=>data.append(k,v));"
+    "result.textContent='Saving...';"
+    "try{"
+    "const r=await fetch('/api/provision',{method:'POST',body:data});"
+    "const text=await r.text();"
+    "result.textContent=r.ok?"
+    "'Credentials saved. Switching to STA...':text;"
+    "}catch(err){result.textContent='Error: '+err;}"
+    "});"
+    "document.getElementById('toggle').addEventListener('click',"
+    "async()=>{"
+    "const token=document.getElementById('token').value;"
+    "result.textContent='...';"
+    "try{"
+    "const g=await fetch('/api/relay',{headers:{Authorization:"
+    "'Bearer '+token}});"
+    "if(!g.ok){result.textContent=await g.text();return;}"
+    "const current=await g.json();"
+    "const next=current.state==='on'?'off':'on';"
+    "const r=await fetch('/api/relay',{method:'PUT',headers:{"
+    "Authorization:'Bearer '+token,'Content-Type':'application/json'},"
+    "body:JSON.stringify({state:next})});"
+    "result.textContent=await r.text();"
+    "}catch(err){result.textContent='Error: '+err;}"
+    "});"
+    "</script></body></html>";
+
+typedef struct {
+  char ssid[33];
+  char password[65];
+} provision_job_t;
 
 static const char *skip_json_ws(const char *cursor, const char *end) {
   while (cursor < end && (*cursor == ' ' || *cursor == '\t' ||
@@ -109,6 +186,95 @@ bool http_api_parse_relay_state(const char *body, size_t len,
   return false;
 }
 
+static int hex_value(char c) {
+  if (c >= '0' && c <= '9') {
+    return c - '0';
+  }
+  if (c >= 'a' && c <= 'f') {
+    return c - 'a' + 10;
+  }
+  if (c >= 'A' && c <= 'F') {
+    return c - 'A' + 10;
+  }
+  return -1;
+}
+
+static bool url_decode(const char *src, size_t src_len, char *dst,
+                       size_t dst_size) {
+  size_t out = 0;
+
+  for (size_t i = 0; i < src_len; i++) {
+    char c = src[i];
+    if (c == '+') {
+      c = ' ';
+    } else if (c == '%') {
+      if (i + 2 >= src_len) {
+        return false;
+      }
+      int hi = hex_value(src[++i]);
+      int lo = hex_value(src[++i]);
+      if (hi < 0 || lo < 0) {
+        return false;
+      }
+      c = (char)((hi << 4) | lo);
+    }
+
+    // NUL внутри значения несовместим с C-строками.
+    if (c == '\0' || out + 1 >= dst_size) {
+      return false;
+    }
+    dst[out++] = c;
+  }
+
+  dst[out] = '\0';
+  return true;
+}
+
+static bool form_get(const char *body, size_t len, const char *key, char *out,
+                     size_t out_size) {
+  size_t key_len = strlen(key);
+  size_t pos = 0;
+
+  while (pos <= len) {
+    size_t end = pos;
+    while (end < len && body[end] != '&') {
+      end++;
+    }
+
+    size_t eq = pos;
+    while (eq < end && body[eq] != '=') {
+      eq++;
+    }
+
+    if (eq < end && eq - pos == key_len &&
+        memcmp(body + pos, key, key_len) == 0) {
+      return url_decode(body + eq + 1, end - (eq + 1), out, out_size);
+    }
+
+    if (end == len) {
+      break;
+    }
+    pos = end + 1;
+  }
+
+  return false;
+}
+
+bool http_api_parse_provision_form(const char *body, size_t len, char *ssid,
+                                   size_t ssid_size, char *password,
+                                   size_t password_size) {
+  if (body == NULL || ssid == NULL || password == NULL || len == 0) {
+    return false;
+  }
+
+  if (!form_get(body, len, "ssid", ssid, ssid_size) ||
+      !form_get(body, len, "password", password, password_size)) {
+    return false;
+  }
+
+  return ssid[0] != '\0';
+}
+
 static esp_err_t send_error(httpd_req_t *req, const char *status,
                             const char *message) {
   char body[128];
@@ -138,6 +304,8 @@ static bool has_valid_token(httpd_req_t *req) {
 
   return strcmp(header + (sizeof(prefix) - 1), CONFIG_RELAY_API_TOKEN) == 0;
 }
+
+static bool is_ap_mode(void) { return wifi_mgr_get_mode() == WIFI_MGR_MODE_AP; }
 
 static esp_err_t send_relay_state(httpd_req_t *req) {
   char body[32];
@@ -237,6 +405,255 @@ static esp_err_t status_get_handler(httpd_req_t *req) {
   return httpd_resp_send(req, body, len);
 }
 
+static esp_err_t captive_page_get_handler(httpd_req_t *req) {
+  if (!is_ap_mode()) {
+    return send_error(req, "404 Not Found", "not found");
+  }
+
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
+  return httpd_resp_send(req, CAPTIVE_PAGE_HTML, sizeof(CAPTIVE_PAGE_HTML) - 1);
+}
+
+static esp_err_t captive_redirect_handler(httpd_req_t *req) {
+  if (!is_ap_mode()) {
+    return send_error(req, "404 Not Found", "not found");
+  }
+
+  wifi_mgr_info_t info;
+  if (wifi_mgr_get_info(&info) != ESP_OK || info.ip[0] == '\0') {
+    return send_error(req, "500 Internal Server Error",
+                      "wifi info unavailable");
+  }
+
+  char location[32];
+  int len = snprintf(location, sizeof(location), "http://%s/", info.ip);
+  if (len < 0 || len >= (int)sizeof(location)) {
+    return send_error(req, "500 Internal Server Error", "response too large");
+  }
+
+  httpd_resp_set_status(req, "302 Found");
+  httpd_resp_set_hdr(req, "Location", location);
+  return httpd_resp_send(req, "", 0);
+}
+
+static void provision_task(void *arg) {
+  provision_job_t *job = (provision_job_t *)arg;
+
+  vTaskDelay(pdMS_TO_TICKS(PROVISION_SWITCH_DELAY_MS));
+
+  esp_err_t err = wifi_mgr_provision(job->ssid, job->password);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Provisioning failed: %s", esp_err_to_name(err));
+  }
+
+  memset(job->password, 0, sizeof(job->password));
+  free(job);
+  vTaskDelete(NULL);
+}
+
+static esp_err_t provision_post_handler(httpd_req_t *req) {
+  if (!is_ap_mode()) {
+    return send_error(req, "404 Not Found", "not found");
+  }
+
+  if (req->content_len == 0 || req->content_len >= PROVISION_BODY_MAX_LEN) {
+    return send_error(req, "400 Bad Request", "invalid body");
+  }
+
+  char body[PROVISION_BODY_MAX_LEN];
+  int len = receive_body(req, body, sizeof(body));
+  if (len < 0) {
+    return send_error(req, "400 Bad Request", "invalid body");
+  }
+
+  provision_job_t *job = calloc(1, sizeof(*job));
+  if (job == NULL) {
+    return send_error(req, "500 Internal Server Error", "out of memory");
+  }
+
+  if (!http_api_parse_provision_form(body, (size_t)len, job->ssid,
+                                     sizeof(job->ssid), job->password,
+                                     sizeof(job->password))) {
+    memset(job->password, 0, sizeof(job->password));
+    free(job);
+    return send_error(req, "400 Bad Request", "invalid body");
+  }
+
+  if (xTaskCreate(provision_task, "provision", 4096, job, 5, NULL) != pdPASS) {
+    memset(job->password, 0, sizeof(job->password));
+    free(job);
+    return send_error(req, "500 Internal Server Error", "out of memory");
+  }
+
+  static const char response[] = "{\"status\":\"provisioning\"}";
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_send(req, response, sizeof(response) - 1);
+}
+
+static int build_dns_response(const uint8_t *query, int query_len,
+                              uint8_t *response, size_t response_size,
+                              uint32_t ip) {
+  if (query_len < 12 || (query[2] & 0x80) != 0) {
+    return 0;
+  }
+
+  uint16_t qdcount = (uint16_t)((query[4] << 8) | query[5]);
+  if (qdcount < 1) {
+    return 0;
+  }
+
+  size_t pos = 12;
+  while (pos < (size_t)query_len && query[pos] != 0) {
+    uint8_t label_len = query[pos];
+    if (label_len > 63 || (label_len & 0xC0) != 0) {
+      return 0;
+    }
+    pos += 1 + label_len;
+  }
+  if (pos >= (size_t)query_len) {
+    return 0;
+  }
+  pos++;
+  if (pos + 4 > (size_t)query_len) {
+    return 0;
+  }
+
+  uint16_t qtype = (uint16_t)((query[pos] << 8) | query[pos + 1]);
+  uint16_t qclass = (uint16_t)((query[pos + 2] << 8) | query[pos + 3]);
+  bool answer_a = (qtype == 1 && qclass == 1);
+
+  size_t question_len = pos + 4 - 12;
+  size_t answer_len = answer_a ? 16 : 0;
+  size_t needed = 12 + question_len + answer_len;
+  if (needed > response_size) {
+    return 0;
+  }
+
+  memcpy(response, query, 12);
+  response[2] = 0x81;
+  response[3] = 0x80;
+  response[4] = 0x00;
+  response[5] = 0x01;
+  response[6] = 0x00;
+  response[7] = answer_a ? 0x01 : 0x00;
+  response[8] = 0x00;
+  response[9] = 0x00;
+  response[10] = 0x00;
+  response[11] = 0x00;
+
+  memcpy(response + 12, query + 12, question_len);
+
+  size_t out = 12 + question_len;
+  if (answer_a) {
+    response[out++] = 0xC0;
+    response[out++] = 0x0C;
+    response[out++] = 0x00;
+    response[out++] = 0x01;
+    response[out++] = 0x00;
+    response[out++] = 0x01;
+    response[out++] = 0x00;
+    response[out++] = 0x00;
+    response[out++] = 0x00;
+    response[out++] = DNS_TTL_SECONDS;
+    response[out++] = 0x00;
+    response[out++] = 0x04;
+    memcpy(response + out, &ip, 4);
+    out += 4;
+  }
+
+  return (int)out;
+}
+
+static void dns_responder_task(void *arg) {
+  (void)arg;
+
+  int sock = -1;
+  bool bind_warned = false;
+  uint8_t rx[DNS_BODY_MAX_LEN];
+  uint8_t tx[DNS_BODY_MAX_LEN];
+
+  while (s_running) {
+    if (!is_ap_mode()) {
+      if (sock >= 0) {
+        close(sock);
+        sock = -1;
+        ESP_LOGI(TAG, "DNS responder stopped");
+      }
+      bind_warned = false;
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
+    }
+
+    wifi_mgr_info_t info;
+    if (wifi_mgr_get_info(&info) != ESP_OK || info.mode != WIFI_MGR_MODE_AP) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
+    }
+
+    uint32_t ap_ip = inet_addr(info.ip);
+    if (ap_ip == 0 || ap_ip == INADDR_NONE) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
+    }
+
+    if (sock < 0) {
+      sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+      if (sock < 0) {
+        if (!bind_warned) {
+          ESP_LOGW(TAG, "Failed to create DNS socket");
+          bind_warned = true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        continue;
+      }
+
+      struct sockaddr_in addr;
+      memset(&addr, 0, sizeof(addr));
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(53);
+      addr.sin_addr.s_addr = ap_ip;
+
+      if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        if (!bind_warned) {
+          ESP_LOGW(TAG, "Failed to bind DNS socket on %s", info.ip);
+          bind_warned = true;
+        }
+        close(sock);
+        sock = -1;
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        continue;
+      }
+
+      struct timeval timeout = {
+          .tv_sec = 1,
+          .tv_usec = 0,
+      };
+      setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+      bind_warned = false;
+      ESP_LOGI(TAG, "DNS responder started on %s", info.ip);
+    }
+
+    struct sockaddr_in source;
+    socklen_t source_len = sizeof(source);
+    int received = recvfrom(sock, rx, sizeof(rx), 0, (struct sockaddr *)&source,
+                            &source_len);
+    if (received <= 0) {
+      continue;
+    }
+
+    int response_len = build_dns_response(rx, received, tx, sizeof(tx), ap_ip);
+    if (response_len > 0) {
+      sendto(sock, tx, response_len, 0, (struct sockaddr *)&source, source_len);
+    }
+  }
+
+  if (sock >= 0) {
+    close(sock);
+  }
+  s_dns_task_started = false;
+  vTaskDelete(NULL);
+}
+
 static esp_err_t http_error_handler(httpd_req_t *req, httpd_err_code_t error) {
   switch (error) {
   case HTTPD_404_NOT_FOUND:
@@ -281,6 +698,36 @@ esp_err_t http_api_start(void) {
       .handler = status_get_handler,
       .user_ctx = NULL,
   };
+  const httpd_uri_t provision_post_uri = {
+      .uri = "/api/provision",
+      .method = HTTP_POST,
+      .handler = provision_post_handler,
+      .user_ctx = NULL,
+  };
+  const httpd_uri_t captive_page_uri = {
+      .uri = "/",
+      .method = HTTP_GET,
+      .handler = captive_page_get_handler,
+      .user_ctx = NULL,
+  };
+  const httpd_uri_t generate_204_uri = {
+      .uri = "/generate_204",
+      .method = HTTP_GET,
+      .handler = captive_redirect_handler,
+      .user_ctx = NULL,
+  };
+  const httpd_uri_t hotspot_detect_uri = {
+      .uri = "/hotspot-detect.html",
+      .method = HTTP_GET,
+      .handler = captive_redirect_handler,
+      .user_ctx = NULL,
+  };
+  const httpd_uri_t connecttest_uri = {
+      .uri = "/connecttest.txt",
+      .method = HTTP_GET,
+      .handler = captive_redirect_handler,
+      .user_ctx = NULL,
+  };
 
   err = httpd_register_uri_handler(s_server, &relay_get_uri);
   if (err == ESP_OK) {
@@ -288,6 +735,21 @@ esp_err_t http_api_start(void) {
   }
   if (err == ESP_OK) {
     err = httpd_register_uri_handler(s_server, &status_get_uri);
+  }
+  if (err == ESP_OK) {
+    err = httpd_register_uri_handler(s_server, &provision_post_uri);
+  }
+  if (err == ESP_OK) {
+    err = httpd_register_uri_handler(s_server, &captive_page_uri);
+  }
+  if (err == ESP_OK) {
+    err = httpd_register_uri_handler(s_server, &generate_204_uri);
+  }
+  if (err == ESP_OK) {
+    err = httpd_register_uri_handler(s_server, &hotspot_detect_uri);
+  }
+  if (err == ESP_OK) {
+    err = httpd_register_uri_handler(s_server, &connecttest_uri);
   }
   if (err == ESP_OK) {
     err = httpd_register_err_handler(s_server, HTTPD_404_NOT_FOUND,
@@ -305,11 +767,27 @@ esp_err_t http_api_start(void) {
     return err;
   }
 
+  s_running = true;
+  if (!s_dns_task_started) {
+    s_dns_task_started = true;
+    if (xTaskCreate(dns_responder_task, "dns_responder", DNS_TASK_STACK, NULL,
+                    DNS_TASK_PRIO, NULL) != pdPASS) {
+      s_dns_task_started = false;
+      s_running = false;
+      ESP_LOGE(TAG, "Failed to start DNS responder");
+      httpd_stop(s_server);
+      s_server = NULL;
+      return ESP_ERR_NO_MEM;
+    }
+  }
+
   ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
   return ESP_OK;
 }
 
 esp_err_t http_api_stop(void) {
+  s_running = false;
+
   if (s_server == NULL) {
     return ESP_OK;
   }
