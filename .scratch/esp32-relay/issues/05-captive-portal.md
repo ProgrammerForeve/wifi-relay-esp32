@@ -1,28 +1,25 @@
-# Captive portal: provisioning и toggle реле
+# Captive portal: provisioning, toggle и демо-консоль
 
 **Status:** ready-for-agent
 **Blocked by:** 02, 03
 
 ## What to build
-
-В AP-режиме клиент при подключении автоматически попадает на страницу с формой
-SSID/пароль и кнопкой toggle реле. Provisioning пишет креденшелы в NVS и уводит
-в STA; toggle требует ручного ввода Bearer-токена.
+В AP-режиме клиент попадает на страницу с демо-панелью (состояние реле,
+режим Wi-Fi, IP, RSSI, uptime), кнопками управления и формой provisioning.
+Toggle в AP работает без токена (ADR-0010). CSS для читаемости на проекторе.
 
 ## Acceptance criteria
-
-- [ ] В AP-режиме DNS-responder отвечает IP точки на любой запрос
-- [ ] Probing-URL `/generate_204`, `/hotspot-detect.html`, `/connecttest.txt`
-      редиректят на страницу (Android/iOS/Windows показывают captive-уведомление)
-- [ ] Страница отдаётся встроенной строкой (без LittleFS); содержит форму
-      SSID/пароль, поле токена и кнопку toggle
-- [ ] `POST /api/provision` **без токена** пишет SSID/пароль в NVS и уводит
-      в STA; при успехе страница подтверждает переход
-- [ ] Toggle на странице работает только с валидным Bearer-токеном;
-      без токена → `401`
-- [ ] В STA-режиме captive portal недоступен
+- [ ] DNS-responder, probing-URL (`/generate_204`, `/hotspot-detect.html`,
+      `/connecttest.txt`) редиректят на страницу
+- [ ] Страница отдаётся встроенной строкой, содержит CSS и панель с индикатором
+      состояния (ON/OFF крупно), режимом Wi-Fi, IP, RSSI, uptime
+- [ ] Кнопка «Обновить статус» → `GET /api/status`, обновляет панель
+- [ ] Кнопка «Обновить состояние реле» → `GET /api/relay`, обновляет индикатор
+- [ ] Кнопка toggle → `PUT /api/relay`, без токена в AP
+- [ ] Форма provisioning: SSID, пароль; POST /api/provision пишет в NVS,
+      устройство уходит в STA
+- [ ] В STA-режиме captive-страница недоступна
 - [ ] Правка вёрстки требует пересборки (осознанно, ADR-0006)
 
 ## Не входит
-
-- Смена токена и имени устройства из UI (ADR-0006 явно исключает)
+- WiFi scan и автозаполнение SSID (тикет 07)

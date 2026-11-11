@@ -1,0 +1,19 @@
+{
+  "theme": "dark",
+  "extensions": ".py, .yml, .txt, .example, .md, .c, .h,  .txt",
+  "ignore_list": "PIG_T3, .git, .vs, .idea, __pycache__, venv, node_modules, .lock, obj, bin, build, dist, .vscode, log.txt, auto_migration_at_startup.py, project_context.txt, database, WORK_TIME, debug, .pig",
+  "ui_tree_expanded": [
+    "components",
+    "main",
+    ".scratch",
+    "components/wifi_mgr/include",
+    "components/wifi_mgr",
+    "."
+  ],
+  "ui_tree_unchecked": [
+    "components/wifi_mgr/include",
+    "components/wifi_mgr/include/wifi_mgr.h"
+  ],
+  "history_stack": [],
+  "redo_stack": []
+}
