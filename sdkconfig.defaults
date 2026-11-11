@@ -1,4 +1,7 @@
 # Целевой чип и объём flash учебного стенда.
+# ВНИМАНИЕ: значения ниже применяются только при ОТСУТСТВИИ sdkconfig.
+# Если вы уже собирали проект, удалите sdkconfig (или отредактируйте через
+# `idf.py menuconfig`), иначе новые значения игнорируются.
 CONFIG_IDF_TARGET="esp32"
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
@@ -10,9 +13,8 @@ CONFIG_RELAY_API_TOKEN="change-me-token"
 CONFIG_RELAY_AP_PASSWORD="change-me-12345678"
 
 # Номера GPIO для платы ESP32 DevKitC V4 (см. README).
-CONFIG_RELAY_GPIO=26
+CONFIG_RELAY_GPIO=25
 CONFIG_BUTTON_GPIO=27
 CONFIG_LED_GPIO=2
-
 # Newlib выбираем для совместимости с ESP-IDF v5.x (ADR) и сборки из путей с кириллицей.
 CONFIG_LIBC_NEWLIB=y

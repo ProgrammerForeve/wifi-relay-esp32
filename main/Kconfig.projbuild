@@ -16,7 +16,7 @@ menu "Relay configuration"
 
     config RELAY_GPIO
         int "Relay GPIO number"
-        default 26
+        default 25
         help
             GPIO управления реле. Модуль реле активен низким уровнем,
             поэтому до инициализации пин должен быть подтянут вверх (ADR-0008).

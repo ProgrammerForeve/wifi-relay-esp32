@@ -34,57 +34,124 @@ static const char CAPTIVE_PAGE_HTML[] =
     "<meta name='viewport' content='width=device-width, initial-scale=1'>"
     "<title>ESP32 Relay</title>"
     "<style>"
-    "body{font-family:system-ui,sans-serif;max-width:420px;margin:2rem auto;"
-    "padding:0 1rem;}"
-    "label{display:block;margin-top:1rem;}"
-    "input{width:100%;padding:.5rem;box-sizing:border-box;}"
-    "button{margin-top:1rem;padding:.6rem 1rem;}"
-    "pre{white-space:pre-wrap;background:#f4f4f4;padding:.5rem;}"
+    "body{font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;"
+    "padding:1rem;background:#f0f2f5;color:#222;}"
+    "h1{font-size:1.25rem;margin:0 0 1rem;}"
+    ".card{background:#fff;border-radius:12px;padding:1rem;"
+    "margin-bottom:1rem;box-shadow:0 2px 6px rgba(0,0,0,.08);}"
+    ".state{font-size:3rem;font-weight:800;text-align:center;"
+    "padding:.5rem 0;letter-spacing:.1em;}"
+    ".state.on{color:#1b8a4c;}"
+    ".state.off{color:#c62828;}"
+    ".state.unknown{color:#999;}"
+    ".row{display:flex;gap:.5rem;margin-top:.75rem;flex-wrap:wrap;}"
+    ".row button{flex:1;min-width:120px;}"
+    "button{padding:.75rem 1rem;border:0;border-radius:8px;"
+    "background:#1976d2;color:#fff;font-size:1rem;font-weight:600;"
+    "cursor:pointer;}"
+    "button.alt{background:#607d8b;}"
+    "button:active{opacity:.8;}"
+    "button:disabled{opacity:.5;cursor:default;}"
+    "input,select{width:100%;padding:.6rem;margin:.3rem 0;"
+    "border:1px solid #cfd8dc;border-radius:8px;font-size:1rem;"
+    "box-sizing:border-box;}"
+    "label{display:block;margin-top:.5rem;font-size:.85rem;color:#555;}"
+    ".info{font-size:.85rem;line-height:1.5;color:#455a64;"
+    "white-space:pre-line;font-family:monospace;}"
+    ".muted{font-size:.75rem;color:#888;text-align:center;margin-top:1rem;}"
     "</style></head><body>"
-    "<h1>ESP32 Relay</h1>"
-    "<form id='provision'>"
-    "<label>Wi-Fi SSID<input name='ssid' required maxlength='32' "
-    "autocomplete='off'></label>"
-    "<label>Wi-Fi password<input name='password' type='password' "
-    "maxlength='64' autocomplete='off'></label>"
-    "<button type='submit'>Connect</button>"
-    "</form>"
-    "<hr>"
-    "<label>Bearer token<input id='token' type='password' "
-    "autocomplete='off'></label>"
-    "<button id='toggle' type='button'>Toggle relay</button>"
-    "<pre id='result'></pre>"
+    "<h1>ESP32 Wi-Fi Relay</h1>"
+    "<div class='card'>"
+    "<div class='state unknown' id='state'>?</div>"
+    "<div class='row'>"
+    "<button id='toggleBtn' onclick='toggleRelay()'>ON / OFF</button>"
+    "<button class='alt' onclick='refreshAll()'>Refresh</button>"
+    "</div></div>"
+    "<div class='card'>"
+    "<div class='info' id='info'>loading...</div>"
+    "</div>"
+    "<div class='card'>"
+    "<label for='ssid'>Wi-Fi network</label>"
+    "<select id='ssid'>"
+    "<option value=''>&mdash; press Scan &mdash;</option>"
+    "</select>"
+    "<div class='row'>"
+    "<button class='alt' id='scanBtn' onclick='scanNetworks()'>Scan</button>"
+    "</div>"
+    "<label for='password'>Password</label>"
+    "<input id='password' type='password' maxlength='64' autocomplete='off'>"
+    "<div class='row'>"
+    "<button onclick='provision()'>Connect</button>"
+    "</div></div>"
+    "<div class='muted'>ESP32-Relay &middot; captive portal</div>"
     "<script>"
-    "const result=document.getElementById('result');"
-    "document.getElementById('provision').addEventListener('submit',"
-    "async(e)=>{"
-    "e.preventDefault();"
-    "const data=new URLSearchParams();"
-    "new FormData(e.target).forEach((v,k)=>data.append(k,v));"
-    "result.textContent='Saving...';"
+    "var stateEl=document.getElementById('state');"
+    "var infoEl=document.getElementById('info');"
+    "async function api(path,method,body){"
+    "var opts={method:method||'GET',headers:{}};"
+    "if(body){opts.headers['Content-Type']='application/json';"
+    "opts.body=JSON.stringify(body);}"
+    "var r=await fetch(path,opts);"
+    "var text=await r.text();"
+    "if(!r.ok)throw new Error(text||('HTTP '+r.status));"
+    "return text?JSON.parse(text):null;"
+    "}"
+    "async function refreshAll(){"
     "try{"
-    "const r=await fetch('/api/provision',{method:'POST',body:data});"
-    "const text=await r.text();"
-    "result.textContent=r.ok?"
-    "'Credentials saved. Switching to STA...':text;"
-    "}catch(err){result.textContent='Error: '+err;}"
-    "});"
-    "document.getElementById('toggle').addEventListener('click',"
-    "async()=>{"
-    "const token=document.getElementById('token').value;"
-    "result.textContent='...';"
+    "var s=await api('/api/status');"
+    "var st=(s.relay||'off').toLowerCase();"
+    "stateEl.textContent=st.toUpperCase();"
+    "stateEl.className='state '+st;"
+    "var w=s.wifi||{};"
+    "var lines='Mode: '+(w.mode||'?');"
+    "lines+='\\nIP: '+(w.ip||'-');"
+    "if(w.mode==='sta'&&w.rssi)lines+='\\nRSSI: '+w.rssi+' dBm';"
+    "if(w.ssid)lines+='\\nSSID: '+w.ssid;"
+    "lines+='\\nUptime: '+(s.uptime_s||0)+' s';"
+    "infoEl.textContent=lines;"
+    "}catch(e){infoEl.textContent='Error: '+e.message;}"
+    "}"
+    "async function toggleRelay(){"
+    "var next=stateEl.textContent==='ON'?'off':'on';"
+    "try{await api('/api/relay','PUT',{state:next});}"
+    "catch(e){alert('Toggle failed: '+e.message);}"
+    "await refreshAll();"
+    "}"
+    "async function scanNetworks(){"
+    "var btn=document.getElementById('scanBtn');"
+    "var sel=document.getElementById('ssid');"
+    "btn.disabled=true;btn.textContent='Scanning...';"
     "try{"
-    "const g=await fetch('/api/relay',{headers:{Authorization:"
-    "'Bearer '+token}});"
-    "if(!g.ok){result.textContent=await g.text();return;}"
-    "const current=await g.json();"
-    "const next=current.state==='on'?'off':'on';"
-    "const r=await fetch('/api/relay',{method:'PUT',headers:{"
-    "Authorization:'Bearer '+token,'Content-Type':'application/json'},"
-    "body:JSON.stringify({state:next})});"
-    "result.textContent=await r.text();"
-    "}catch(err){result.textContent='Error: '+err;}"
-    "});"
+    "var list=await api('/api/scan');"
+    "sel.innerHTML='';"
+    "var def=document.createElement('option');"
+    "def.value='';def.textContent='-- select --';"
+    "sel.appendChild(def);"
+    "for(var i=0;i<list.length;i++){"
+    "var o=document.createElement('option');"
+    "o.value=list[i].ssid;"
+    "o.textContent=list[i].ssid+' ('+list[i].rssi+' dBm)';"
+    "sel.appendChild(o);"
+    "}"
+    "}catch(e){alert('Scan failed: '+e.message);}"
+    "btn.disabled=false;btn.textContent='Scan';"
+    "}"
+    "async function provision(){"
+    "var ssid=document.getElementById('ssid').value;"
+    "var password=document.getElementById('password').value;"
+    "if(!ssid){alert('Select a network');return;}"
+    "var data=new URLSearchParams();"
+    "data.append('ssid',ssid);"
+    "data.append('password',password);"
+    "try{"
+    "var r=await fetch('/api/provision',{method:'POST',body:data});"
+    "var text=await r.text();"
+    "if(r.ok)alert('Credentials saved. Switching to STA...');"
+    "else alert('Provision failed: '+text);"
+    "}catch(e){alert('Provision error: '+e.message);}"
+    "}"
+    "refreshAll();"
+    "setInterval(refreshAll,5000);"
     "</script></body></html>";
 
 typedef struct {
@@ -286,6 +353,12 @@ static esp_err_t send_error(httpd_req_t *req, const char *status,
 }
 
 static bool has_valid_token(httpd_req_t *req) {
+  // ADR-0010: в AP-режиме управляющие эндпоинты доступны без токена —
+  // защита обеспечивается WPA2-паролем точки доступа. В STA токен обязателен.
+  if (wifi_mgr_get_mode() == WIFI_MGR_MODE_AP) {
+    return true;
+  }
+
   size_t header_len = httpd_req_get_hdr_value_len(req, "Authorization");
   if (header_len == 0 || header_len >= AUTH_HEADER_MAX_LEN) {
     return false;
@@ -488,6 +561,31 @@ static esp_err_t provision_post_handler(httpd_req_t *req) {
   static const char response[] = "{\"status\":\"provisioning\"}";
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_send(req, response, sizeof(response) - 1);
+}
+
+static esp_err_t scan_get_handler(httpd_req_t *req) {
+  if (!is_ap_mode()) {
+    return send_error(req, "404 Not Found", "not found");
+  }
+
+  char *buf = malloc(4096);
+  if (buf == NULL) {
+    return send_error(req, "500 Internal Server Error", "out of memory");
+  }
+
+  esp_err_t err = wifi_mgr_scan_json(buf, 4096);
+  if (err != ESP_OK) {
+    free(buf);
+    if (err == ESP_ERR_TIMEOUT) {
+      return send_error(req, "500 Internal Server Error", "scan timeout");
+    }
+    return send_error(req, "500 Internal Server Error", "scan failed");
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  esp_err_t ret = httpd_resp_sendstr(req, buf);
+  free(buf);
+  return ret;
 }
 
 static int build_dns_response(const uint8_t *query, int query_len,
@@ -704,6 +802,12 @@ esp_err_t http_api_start(void) {
       .handler = provision_post_handler,
       .user_ctx = NULL,
   };
+  const httpd_uri_t scan_get_uri = {
+      .uri = "/api/scan",
+      .method = HTTP_GET,
+      .handler = scan_get_handler,
+      .user_ctx = NULL,
+  };
   const httpd_uri_t captive_page_uri = {
       .uri = "/",
       .method = HTTP_GET,
@@ -738,6 +842,9 @@ esp_err_t http_api_start(void) {
   }
   if (err == ESP_OK) {
     err = httpd_register_uri_handler(s_server, &provision_post_uri);
+  }
+  if (err == ESP_OK) {
+    err = httpd_register_uri_handler(s_server, &scan_get_uri);
   }
   if (err == ESP_OK) {
     err = httpd_register_uri_handler(s_server, &captive_page_uri);

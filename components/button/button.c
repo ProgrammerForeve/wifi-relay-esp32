@@ -52,10 +52,15 @@ static void button_task(void *arg) {
         button_debounce_step(debounce, raw_pressed, now_us, BUTTON_DEBOUNCE_US);
 
     if (!was_pressed && debounce.stable_pressed) {
+      ESP_LOGI(TAG, "button: pressed (raw_gpio=%d)",
+               gpio_get_level(CONFIG_BUTTON_GPIO));
       press_start_us = now_us;
       long_press_handled = false;
     } else if (was_pressed && !debounce.stable_pressed) {
       int64_t duration_us = now_us - press_start_us;
+      ESP_LOGI(TAG, "button: released after %lld ms (short=%d)",
+               (long long)(duration_us / 1000),
+               duration_us < BUTTON_SHORT_PRESS_MAX_US && !long_press_handled);
       if (!long_press_handled && duration_us < BUTTON_SHORT_PRESS_MAX_US) {
         ESP_LOGI(TAG, "Short press, toggling relay");
         esp_err_t err = relay_toggle();

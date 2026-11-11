@@ -1,7 +1,7 @@
 # ESP32 Wi-Fi Relay
 
 Учебный проект: Wi-Fi-реле на ESP32. Разработка на Ubuntu, ESP-IDF.
-Архитектура зафиксирована в ADR-0001…0009, термины — в `GLOSSARY.md`.
+Архитектура зафиксирована в ADR-0001…0011, термины — в `GLOSSARY.md`.
 Реализованы реле, Wi-Fi STA с fallback в AP, captive portal, HTTP REST API
 и физическая кнопка. Проверка — ручной smoke-тест по ADR-0009.
 
@@ -40,7 +40,7 @@
 
 | Назначение | GPIO | Примечание |
 |------------|------|------------|
-| Реле       | 26   | Активный низкий уровень; при старте OFF (ADR-0008) |
+| Реле       | 25   | Активный низкий уровень; при старте OFF (ADR-0008) |
 | Кнопка     | 27   | Замыкает на GND, внутренняя подтяжка вверх |
 | LED статуса| 2    | Встроенный LED DevKitC V4 |
 
@@ -102,7 +102,7 @@ curl -X POST -d 'ssid=<ssid>&password=<password>' \
 │   ├── http_api/   # esp_http_server, обработчики, captive portal
 │   └── button/     # антидребезг, короткое/длинное нажатие
 ├── docs/
-│   └── adr/        # ADR-0001 … ADR-0009
+│   └── adr/        # ADR-0001 … ADR-0011
 └── GLOSSARY.md
 ```
 
@@ -133,7 +133,7 @@ idf.py build flash monitor
 
 - [`HARDWARE.md`](HARDWARE.md) — распиновка, подключение реле/кнопки, питание
   и меры безопасности.
-- [`docs/adr/`](docs/adr/) — Architecture Decision Records, 0001…0009.
+- [`docs/adr/`](docs/adr/) — Architecture Decision Records, 0001…0011.
 - [`GLOSSARY.md`](GLOSSARY.md) — термины проекта; при изменении решения
   сначала правится ADR, потом глоссарий.
 - Smoke-тест — чек-лист в [ADR-0009](docs/adr/0009-manual-smoke-test-only.md).

@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -11,6 +12,7 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -32,6 +34,9 @@
 #define BACKOFF_INIT_MS 1000U
 #define BACKOFF_MAX_MS 60000U
 
+#define SCAN_DONE_BIT BIT0
+#define SCAN_TIMEOUT_MS 8000
+
 #define WIFI_CMD_QUEUE_LEN 8
 #define WIFI_CMD_TASK_STACK 4096
 #define WIFI_CMD_TASK_PRIO 5
@@ -50,6 +55,7 @@ static esp_timer_handle_t s_connect_timeout_timer;
 static esp_timer_handle_t s_reconnect_timer;
 static esp_netif_t *s_sta_netif;
 static esp_netif_t *s_ap_netif;
+static EventGroupHandle_t s_scan_events;
 
 static wifi_mgr_mode_t s_mode = WIFI_MGR_MODE_OFF;
 static bool s_connected;
@@ -265,6 +271,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     case WIFI_EVENT_AP_START:
       handle_ap_start();
       break;
+    case WIFI_EVENT_SCAN_DONE:
+      if (s_scan_events != NULL) {
+        xEventGroupSetBits(s_scan_events, SCAN_DONE_BIT);
+      }
+      break;
     default:
       break;
     }
@@ -401,7 +412,7 @@ static esp_err_t start_ap(void) {
   snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s", ssid);
   state_unlock();
 
-  err = esp_wifi_set_mode(WIFI_MODE_AP);
+  err = esp_wifi_set_mode(WIFI_MODE_APSTA);
   if (err == ESP_OK) {
     err = esp_wifi_set_config(WIFI_IF_AP, &config);
   }
@@ -420,7 +431,7 @@ static esp_err_t start_ap(void) {
 
   transition_unlock();
 
-  ESP_LOGW(TAG, "AP started: SSID=%s", ssid);
+  ESP_LOGW(TAG, "APSTA started: SSID=%s", ssid);
   return ESP_OK;
 }
 
@@ -472,8 +483,9 @@ esp_err_t wifi_mgr_init(void) {
   s_state_mutex = xSemaphoreCreateMutex();
   s_transition_mutex = xSemaphoreCreateMutex();
   s_cmd_queue = xQueueCreate(WIFI_CMD_QUEUE_LEN, sizeof(wifi_cmd_t));
+  s_scan_events = xEventGroupCreate();
   if (s_state_mutex == NULL || s_transition_mutex == NULL ||
-      s_cmd_queue == NULL) {
+      s_cmd_queue == NULL || s_scan_events == NULL) {
     return ESP_ERR_NO_MEM;
   }
 
@@ -678,4 +690,95 @@ esp_err_t wifi_mgr_reset_credentials(void) {
 
   ESP_LOGW(TAG, "Wi-Fi credentials erased");
   return start_ap();
+}
+
+static void escape_into(char *dst, size_t dst_len, const char *src) {
+  size_t j = 0;
+  for (size_t i = 0; src[i] != '\0' && j + 2 < dst_len; i++) {
+    if (src[i] == '"' || src[i] == '\\') {
+      dst[j++] = '\\';
+    }
+    dst[j++] = src[i];
+  }
+  dst[j] = '\0';
+}
+
+esp_err_t wifi_mgr_scan_json(char *buf, size_t len) {
+  if (buf == NULL || len < 3) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  state_lock();
+  bool is_ap = (s_mode == WIFI_MGR_MODE_AP);
+  state_unlock();
+  if (!is_ap) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (s_scan_events == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  xEventGroupClearBits(s_scan_events, SCAN_DONE_BIT);
+
+  wifi_scan_config_t scan_cfg = {
+      .ssid = NULL,
+      .bssid = NULL,
+      .channel = 0,
+      .show_hidden = false,
+      .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+  };
+
+  esp_err_t err = esp_wifi_scan_start(&scan_cfg, false);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "esp_wifi_scan_start failed: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  EventBits_t bits = xEventGroupWaitBits(s_scan_events, SCAN_DONE_BIT,
+                                         pdTRUE, pdTRUE,
+                                         pdMS_TO_TICKS(SCAN_TIMEOUT_MS));
+  if (!(bits & SCAN_DONE_BIT)) {
+    esp_wifi_scan_stop();
+    ESP_LOGW(TAG, "scan timed out");
+    return ESP_ERR_TIMEOUT;
+  }
+
+  uint16_t count = 0;
+  esp_wifi_scan_get_ap_num(&count);
+
+  if (count == 0) {
+    snprintf(buf, len, "[]");
+    return ESP_OK;
+  }
+
+  wifi_ap_record_t *records = calloc(count, sizeof(*records));
+  if (records == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
+
+  uint16_t actual = count;
+  esp_err_t get_err = esp_wifi_scan_get_ap_records(&actual, records);
+  if (get_err != ESP_OK) {
+    free(records);
+    return get_err;
+  }
+
+  size_t off = 0;
+  off += snprintf(buf + off, len - off, "[");
+  for (uint16_t i = 0; i < actual && off + 96 < len; i++) {
+    if (i > 0) {
+      off += snprintf(buf + off, len - off, ",");
+    }
+    char escaped[70];
+    escape_into(escaped, sizeof(escaped), (const char *)records[i].ssid);
+    off += snprintf(buf + off, len - off,
+                    "{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
+                    escaped, records[i].rssi, (int)records[i].authmode);
+  }
+  snprintf(buf + off, len - off, "]");
+
+  free(records);
+  ESP_LOGI(TAG, "scan done: %u networks", (unsigned)actual);
+  return ESP_OK;
 }

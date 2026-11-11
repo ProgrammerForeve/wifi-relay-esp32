@@ -6,6 +6,7 @@
 #include "freertos/semphr.h"
 #include "sdkconfig.h"
 
+// ADR-0005: активный низкий уровень (ON = 0 В, OFF = 3.3 В).
 #define RELAY_ACTIVE_LEVEL 0
 #define RELAY_INACTIVE_LEVEL 1
 

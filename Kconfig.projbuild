@@ -1,0 +1,57 @@
+menu "Relay Hardware"
+
+config RELAY_GPIO
+    int "Relay GPIO pin"
+    default 25
+    help
+        GPIO connected to the relay module IN pin.
+
+config BUTTON_GPIO
+    int "Button GPIO pin"
+    default 27
+    help
+        GPIO connected to the push button. Button shorts the pin to GND;
+        internal pull-up is enabled in firmware.
+
+config LED_GPIO
+    int "Status LED GPIO pin"
+config RELAY_ACTIVE_LOW
+    bool "Relay module is active-low (ON = 0V, OFF = HiZ)"
+    default y
+    help
+        Set to 'y' (default) for opto-isolated active-low modules:
+        the relay turns ON when the GPIO is pulled to GND and turns
+        OFF when the GPIO is released (HiZ). Used together with
+        open-drain output this gives exactly 'OFF = HiZ, ON = 0V'
+        and matches the safe state (ADR-0008, ADR-0012).
+        Set to 'n' only if you swap the module for an active-high
+        type that turns ON with a positive voltage.
+        is active-high, prefer flipping this option and, if it fixes the
+        project, record the change in a new ADR-0012.
+
+config RELAY_SELFTEST_AT_BOOT
+    bool "Pulse relay 3 times at boot (debug)"
+    default y
+    help
+        On each boot, toggle the relay ON/OFF three times with 200 ms
+        pauses and log the results. Useful for verifying wiring,
+        polarity and power before testing button/API commands. Disable
+        once the relay clicks reliably.
+
+endmenu
+
+menu "Relay API"
+
+config RELAY_API_TOKEN
+    string "Bearer token for control API"
+    default "change-me-token"
+    help
+        Token required by control endpoints in STA mode. Not logged.
+
+config RELAY_AP_PASSWORD
+    string "Fallback AP password (min 8 chars)"
+    default "change-me-12345678"
+    help
+        WPA2 password for the fallback AP. Must be at least 8 characters.
+
+endmenu

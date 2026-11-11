@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -58,6 +59,15 @@ esp_err_t wifi_mgr_provision(const char *ssid, const char *password);
  * @brief Стереть Wi-Fi-креденшелы из NVS и перейти в AP.
  */
 esp_err_t wifi_mgr_reset_credentials(void);
+
+/**
+ * @brief Скан Wi-Fi сетей. Только в AP-режиме (APSTA, ADR-0011).
+ *
+ * Записывает JSON-массив [{"ssid":"...","rssi":-45,"auth":3}, ...]
+ * в buf. Возвращает ESP_ERR_INVALID_STATE вне AP-режима,
+ * ESP_ERR_TIMEOUT если скан не успел за 8 секунд.
+ */
+esp_err_t wifi_mgr_scan_json(char *buf, size_t len);
 
 #ifdef __cplusplus
 }
